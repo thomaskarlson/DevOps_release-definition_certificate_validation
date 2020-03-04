@@ -73,7 +73,38 @@ function Get-RemoteCertificate () {
   }
 
 }
+function Test-Certificate () {
+  param(
+    [Parameter(Mandatory = $true)]
+    $Binding,
 
+    [Parameter(Mandatory = $true)]
+    $ReleaseDefinition
+  )
+
+  $cert = (Get-RemoteCertificate $_.hostname)
+  if ($cert -ne $null) {
+    if ($_.sslThumbprint.ToLower() -ne ($cert).Thumbprint.ToLower()) {
+      Write-Output "Problem with release definition ""$($ReleaseDefinition.name)"""
+      Write-Output "    Certificate thumbprint in release pipeline for the host ""$($_.hostname)"" is not identical to thumbprint installed on server!"
+      Write-Output "    Thumbprint in release pipeline         : $($_.sslThumbprint.ToLower())"
+      Write-Output "    Thumbprint in on installed certificate : $($cert.Thumbprint.ToLower())"
+      Write-Output "    FIX IT NOW: $($ReleaseDefinition._links.web.href) `n"
+    }
+
+    if ($cert.NotAfter -lt (Get-Date)) {
+      Write-Output "Problem with release definition ""$($ReleaseDefinition.name)"""
+      Write-Output "    Certificate on webserver with hostname ""$($_.hostname)"" has expired!"
+      Write-Output "    RENEW CERTIFICATE NOW! `n"
+    }
+  }
+  else {
+    Write-Output "Problem with release definition ""$($ReleaseDefinition.name)"""
+    Write-Output "    Unable to find certificate for host ""$($_.hostname)"" on webserver. Are you using a wrong hostname in your definition?"
+    Write-Output "    FIX IT NOW: $($ReleaseDefinition._links.web.href) `n"
+  }
+
+}
 $AzureDevOpsAuthenicationHeader = @{ Authorization = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$($AzureDevOpsPAT)")) }
 
 $UriOrga = "https://dev.azure.com/$($OrganizationName)/"
@@ -87,33 +118,21 @@ $Projects.value.ForEach({
 
     $ReleaseDefinitions.value.ForEach({
         $ReleaseDefinition = $(Invoke-RestMethod -Uri $_.url -Method get -Headers $AzureDevOpsAuthenicationHeader)
+
+
         $ReleaseDefinition.environments.ForEach({
+            if (($_.processParameters.inputs -ne $null) -and ($_.processParameters.inputs.Where({ $_.Name -eq "Bindings" }).defaultValue)) {
+              ($_.processParameters.inputs.Where({ $_.Name -eq "Bindings" }).defaultValue | ConvertFrom-Json).Bindings.Where({ $_.protocol -eq 'https' }).ForEach({
+                  Test-Certificate -Binding $_ -ReleaseDefinition $ReleaseDefinition
+
+                })
+            }
+
             $_.deployPhases.ForEach({
                 $_.workflowTasks.ForEach({
                     if (($_.inputs.Bindings -ne $null) -and ($_.inputs.Bindings -ne '$(Parameters.Bindings)')) {
                       ($_.inputs.Bindings | ConvertFrom-Json).Bindings.Where({ $_.protocol -eq 'https' }).ForEach({
-
-                          $cert = (Get-RemoteCertificate $_.hostname)
-                          if ($cert -ne $null) {
-                            if ($_.sslThumbprint.ToLower() -ne ($cert).Thumbprint.ToLower()) {
-                              Write-Output "Problem with release definition ""$($ReleaseDefinition.name)"""
-                              Write-Output "    Certificate thumbprint in release pipeline for the host ""$($_.hostname)"" is not identical to thumbprint installed on server!"
-                              Write-Output "    Thumbprint in release pipeline         : $($_.sslThumbprint.ToLower())"
-                              Write-Output "    Thumbprint in on installed certificate : $($cert.Thumbprint.ToLower())"
-                              Write-Output "    FIX IT NOW: $($ReleaseDefinition._links.web.href) `n"
-                            }
-
-                            if ($cert.NotAfter -lt (Get-Date)) {
-                              Write-Output "Problem with release definition ""$($ReleaseDefinition.name)"""
-                              Write-Output "    Certificate on webserver with hostname ""$($_.hostname)"" has expired!"
-                              Write-Output "    RENEW CERTIFICATE NOW! `n"
-                            }
-                          }
-                          else {
-                            Write-Output "Problem with release definition ""$($ReleaseDefinition.name)"""
-                            Write-Output "    Unable to find certificate for host ""$($_.hostname)"" on webserver. Are you using a wrong hostname in your definition?"
-                            Write-Output "    FIX IT NOW: $($ReleaseDefinition._links.web.href) `n"
-                          }
+                          Test-Certificate -Binding $_ -ReleaseDefinition $ReleaseDefinition
                         })
                     }
                   })
@@ -121,5 +140,4 @@ $Projects.value.ForEach({
           })
       })
   })
-
 
